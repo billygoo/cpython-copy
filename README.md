@@ -5,3 +5,4 @@
 지속적으로 cpython에 있는 코드를 따라치면서 코드 읽기, Best Pratice로 작성된 코드 익히기로 활용합니다. 
 
 
+https://github.com/billygoo/cpython-copy
