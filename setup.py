@@ -24,7 +24,6 @@ cflags = sysconfig.get_config_var("CFLAGS")
 py_cflags_nodist = sysconfig.get_config_var('PY_CFLAGS_NODIST')
 sysconfig.get_config_vars()['CFLAGS'] = cflags + ' ' + py_cflags_nodist
 
-
 class Dummy:
     """Hack for parallel build"""
     ProcessPoolExecutor = None
@@ -74,14 +73,16 @@ def sysroot_paths(make_vars, subdirs):
     for var_name in make_vars:
         var = sysconfig.get_config_var(var_name)
         if var is not None:
-            sysroot = m.group(1).strip('"')
-            for subdir in subdirs:
-                if os.path.isabs(subdir):
-                    subdir = subdir[1:]
-                path = os.path.join(sysroot, subdir)
-                if os.path.isdir(path):
-                    dirs.append(path)
-            break
+            m = re.search(r'--sysroot-([^"]\S*|"[^"]_")', var)
+            if m is not None:
+                sysroot = m.group(1).strip('"')
+                for subdir in subdirs:
+                    if os.path.isabs(subdir):
+                        subdir = subdir[1:]
+                    path = os.path.join(sysroot, subdir)
+                    if os.path.isdir(path):
+                        dirs.append(path)
+                break
     return dirs
 
 def macosx_sdk_root():
@@ -163,6 +164,7 @@ def find_library_file(compiler, libname, std_dirs, paths):
             # libraries with .tbd extensions rather than the normal .dylib
             # shared libraries installed in /. The Apple compiler tool
             # chain handles this transparently but it can cause problems
+            # for programs that are being built with an SDK and searching
             # for sepcific libraries.  Distutils find_library_file() now
             # knows th also search for and return .tbd files. But callers
             # of find_library_file need to keep in mind that the base filename
@@ -176,6 +178,9 @@ def find_library_file(compiler, libname, std_dirs, paths):
             # /usr/lib/libedit.dylib
             if os.path.join(sysroot, p[1:]) == dirname:
                 return [ ]
+
+        if p == dirname:
+            return [ ]
 
     # Otherwise, it must have been in one of the additional directories,
     # so we have to figure out which one.
@@ -220,7 +225,7 @@ class PyBuildExt(build_ext):
     def build_extensions(self):
 
         # Detect which modules should be compiled
-        missiong = self.detect_modules()
+        missing = self.detect_modules()
 
         # Remove modules that are present on the disabled list
         extensions = [ext for ext in self.extensions
@@ -273,90 +278,232 @@ class PyBuildExt(build_ext):
             if ext.name in sysconf_built:
                 mods_built.append(ext)
             if ext.name in sysconf_dis:
-                mod_disabled.append(ext)
+                mods_disabled.append(ext)
 
-            mods_configured = mods_built + mods_disabled
-            if mods_configured:
-                self.extensions = [x for x in self.extensions if x not in
-                                   mods_configured]
-                # Remove the shared libraries built by a previous build.
-                for ext in mods_configured:
-                    fullpath = self.get_ext_fullpath(ext.name)
-                    if os.path.exists(fullpath):
-                        os.unlink(fullpath)
+        mods_configured = mods_built + mods_disabled
+        if mods_configured:
+            self.extensions = [x for x in self.extensions if x not in
+                               mods_configured]
+            # Remove the shared libraries built by a previous build.
+            for ext in mods_configured:
+                fullpath = self.get_ext_fullpath(ext.name)
+                if os.path.exists(fullpath):
+                    os.unlink(fullpath)
 
-            # When you run "make CC-altcc" or something similar, you really want
-            # those environment variables passed into the setup.py phase, Here's
-            # a small set of useful ones.
-            compiler = os.environ.get('CC')
-            args = {}
-            # unfortunately, distutils doesn't let us provide separate C and C++
-            # compilers
-            if compiler is not None:
-                (ccshared,cflags) = sysconfig.get_config_vars('CCSHARED', 'CFLAGS')
-                args['compiler_so'] = compiler + ' ' + ccshared + ' ' + cflags
-            self.compiler.set_executables(**args)
+        # When you run "make CC-altcc" or something similar, you really want
+        # those environment variables passed into the setup.py phase, Here's
+        # a small set of useful ones.
+        compiler = os.environ.get('CC')
+        args = {}
+        # unfortunately, distutils doesn't let us provide separate C and C++
+        # compilers
+        if compiler is not None:
+            (ccshared,cflags) = sysconfig.get_config_vars('CCSHARED', 'CFLAGS')
+            args['compiler_so'] = compiler + ' ' + ccshared + ' ' + cflags
+        self.compiler.set_executables(**args)
 
-            build_ext.build_extensions(self)
+        build_ext.build_extensions(self)
 
-            for ext in self.extensions:
-                self.check_extension_import(ext)
+        for ext in self.extensions:
+            self.check_extension_import(ext)
 
-            longest = max([len(e.name) for e in self.extensions], default=0)
-            if self.failed or self.failed_on_import:
-                all_failed = self.failed + self.failed_on_import
-                longest = max(longest, max([len(name) for name in all_failed]))
+        longest = max([len(e.name) for e in self.extensions], default=0)
+        if self.failed or self.failed_on_import:
+            all_failed = self.failed + self.failed_on_import
+            longest = max(longest, max([len(name) for name in all_failed]))
 
-            def print_three_column(lst):
-                lst.sort(key=str.lower)
-                # guarantee zip() doesn't drop anything
-                while len(lst) % 3:
-                    lst.append("")
-                for e, f, g in zip(lst[::3], lst[1::3], lst[2::3]):
-                    printf("%-*s  %-*s  %-*s" % (longest, e, longest, f,
-                                                 longest, g))
+        def print_three_column(lst):
+            lst.sort(key=str.lower)
+            # guarantee zip() doesn't drop anything
+            while len(lst) % 3:
+                lst.append("")
+            for e, f, g in zip(lst[::3], lst[1::3], lst[2::3]):
+                print("%-*s  %-*s  %-*s" % (longest, e, longest, f,
+                                             longest, g))
 
-            if missing:
-                print()
-                print("Python build finished successfully!")
-                print("The necessary bits to build these optional modules where not "
-                      "found:")
-                print_three_column(missing)
-                print("To find the necessary bits, look in setup.py in"
-                      " detect_modules() for the module's name.")
-                print()
+        if missing:
+            print()
+            print("Python build finished successfully!")
+            print("The necessary bits to build these optional modules where not "
+                  "found:")
+            print_three_column(missing)
+            print("To find the necessary bits, look in setup.py in"
+                  " detect_modules() for the module's name.")
+            print()
 
-            if mods_built:
-                print()
-                print("The following modules found by detect_modules() in "
-                      " setup.py, have been")
-                print("built by the Makefile instead, as configured by the"
-                      " Setup files:")
-                print_three_column([ext.name for ext in mods_built])
-                print()
+        if mods_built:
+            print()
+            print("The following modules found by detect_modules() in "
+                  " setup.py, have been")
+            print("built by the Makefile instead, as configured by the"
+                  " Setup files:")
+            print_three_column([ext.name for ext in mods_built])
+            print()
 
-            if self.failed:
-                failed = self.failed[:]
-                print()
-                print("Failed th build these modules:")
-                print_three_column(failed)
-                print()
+        if mods_disabled:
+            print()
+            print("The following modules found by detect_modules() in"
+                  " setup.py have not")
+            print("been built, they are *disabled* in the Setup files:")
+            print_three_column([ext.name for ext in mods_disabled])
+            print()
 
-            if self.failed_on_import:
-                failed = self.failed_on_import[:]
-                print()
-                print("Following modules built successfully"
-                      " but were removed because they could not be imported:")
-                print_three_column(failed)
-                print()
+        if self.failed:
+            failed = self.failed[:]
+            print()
+            print("Failed th build these modules:")
+            print_three_column(failed)
+            print()
 
-            if any('_ssl' in l
-                   for l in (missing, self.failed, self.failed_on_import)):
-                print()
-                print("Could not build the ssl module!")
-                print("Python requires an OpenSSL 1.0.2 or 1.1 compatible "
-                      "libssl with X509_VERIFY_PARAM_set1_host().")
-                print("LibreSSL 2.6.4 and earlier do not provide the necessary "
-                      "APIs, https://github.com/libressl-portable/portable/issues/381")
-                print()
+        if self.failed_on_import:
+            failed = self.failed_on_import[:]
+            print()
+            print("Following modules built successfully"
+                  " but were removed because they could not be imported:")
+            print_three_column(failed)
+            print()
+
+        if any('_ssl' in l
+               for l in (missing, self.failed, self.failed_on_import)):
+            print()
+            print("Could not build the ssl module!")
+            print("Python requires an OpenSSL 1.0.2 or 1.1 compatible "
+                  "libssl with X509_VERIFY_PARAM_set1_host().")
+            print("LibreSSL 2.6.4 and earlier do not provide the necessary "
+                  "APIs, https://github.com/libressl-portable/portable/issues/381")
+            print()
+
+    def build_extension(self, ext):
+
+        if ext.name == '_ctypes':
+            if not self.configure_ctypes(ext):
+                self.failed.append(ext.name)
+                return
+
+        try:
+            build_ext.build_extension(self, ext)
+        except (CCompilerError, DistutilsError) as why:
+            self.annouce('WARNING: building of extension "%s" failed: %s' %
+                         (ext.name, sys.exc_info()[1]))
+            self.failed.append(ext.name)
+            return
+
+    def check_extension_import(self, ext):
+        # Don't try to import an extension that has failed to compile
+        if ext.name in self.failed:
+            self.annouce(
+                'WARNING: skipping import check for failed build "%s"' %
+                ext.name, level=1)
+            return
+
+        # Workaround for Mac OS X: The Carbon-based modules cannot be
+        # reliably imported into a command-line Python
+        if 'Carbon' in ext.extra_link_args:
+            self.annouce(
+                'WARNING: skipping import check for Carbon-based "%s"' %
+                ext.name)
+            return
+
+        if host_platform == 'darwin' and (
+            sys.maxsize > 2**32 and '-arch' in ext.extra_link_args):
+            # Don't bother doing an import check when an extension was
+            # build with an explicit '-arch' flag on OSX. That's currently
+            # only used to build 32-bit only extensions in a 4-way
+            # universal build and loading 32-bit code into a 64-bit
+            # process will fail
+            self.announce(
+                'WARNING: skipping import check for "%s"' %
+                ext.name)
+            return
+
+        # Workaround for Cygwin: Cygwin currently has fork issues when many
+        # modules have been imported
+        if host_platform == 'cygwin':
+            self.announce('WARNING: skipping import check for Cygwin-based "%s"'
+                          % ext.name)
+            return
+        ext_filename = os.path.join(
+            self.build_lib,
+            self.get_ext_filename(self.get_ext_fullname(ext.name)))
+
+        # If the build directory didn't exist when setup.py was
+        # started, sys.path_importer_cache has a negative result
+        # cached. Clear that cache before trying to import.
+        sys.path_importer_cache.clear()
+
+        # Don't try to load extensions for cross builds
+        if cross_compiling:
+            return
+
+        loader = importlib.machinery.ExtensionFileLoader(ext.name, ext_filename)
+        spec = importlib.util.spec_from_file_location(ext.name, ext_filename,
+                                                      loader=loader)
+        try:
+            importlib._bootstrap._load(spec)
+        except ImportError as why:
+            self.failed_on_import.append(ext.name)
+            self.announce('*** WARNING: renaming "%s" since importing it'
+                          ' failed: %s' % (ext.name, why), level=3)
+            assert not self.inplace
+            basename, tail = os.path.splitext(ext_filename)
+            newname = basename + "_failed" + tail
+            if os.path.exists(newname):
+                os.remove(newname)
+            os.rename(ext_filename, newname)
+
+        except:
+            exc_type, why, tb = sys.exc_info()
+            self.announce('*** WARNING: importing extension "%s" '
+                          'failed with %s: %s' % (ext.name, exc_type, why),
+                          level=3)
+            self.failed.append(ext.name)
+
+    def add_multiarch_paths(self):
+        # Debian/Ubuntu multiarch support.
+        # https://wiki.ubuntu.com/MultiarchSpec
+        cc = sysconfig.get_config_var('CC')
+        tmpfile = os.path.join(self.build_temp, 'multiarch')
+        if not os.path.exists(self.build_temp):
+            os.makedirs(self.build_temp)
+        ret = os.system(
+            '%s -print-multiarch > %s 2> /dev/null' % (cc, tmpfile))
+        multiarch_path_component = ''
+        try:
+            if ret >> 8 == 0:
+                with open(tmpfile) as fp:
+                    multiarch_path_component = fp.readline().strip()
+        finally:
+            os.unlink(tmpfile)
+
+        if multiarch_path_component != '':
+            add_dir_to_list(self.compiler.library_dirs,
+                            '/usr/lib/' + multiarch_path_component)
+            add_dir_to_list(self.compiler.include_dirs,
+                            '/usr/include/' + multiarch_path_component)
+            return
+
+        if not find_executable('dpkg-architecture'):
+            return
+        opt = ''
+        if cross_compiling:
+            opt = '-t' + sysconfig.get_config_var('HOST_GNU_TYPE')
+        tmpfile = os.path.join(self.build_temp, 'multiarch')
+        if not os.path.exists(self.build_temp):
+            os.makedirs(self.build_temp)
+        ret = os.system(
+            'dpkg-architecture %s -qDEB_HOST_MULTIARCH > %s 2> /dev/null' %
+            (opt, tmpfile))
+        try:
+            if ret >> 8 == 0:
+                with open(tmpfile) as fp:
+                    multiarch_path_component = fp.readline().strip()
+                add_dir_to_list(self.compiler.library_dirs,
+                                '/usr/lib/' + multiarch_path_component)
+                add_dir_to_list(self.compiler.include_dirs,
+                                '/usr/include/' + multiarch_path_component)
+        finally:
+            os.unlink(tmpfile)
+
+
+
 
