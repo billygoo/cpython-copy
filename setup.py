@@ -504,6 +504,85 @@ class PyBuildExt(build_ext):
         finally:
             os.unlink(tmpfile)
 
+    def add_gcc_paths(self):
+        gcc = sysconfig.get_config_var('CC')
+        tmpfile = os.path.join(self.build_temp, 'gccpaths')
+        if not os.path.exists(self.build_temp):
+            os.makedirs(self.build_temp)
+        ret = os.system('%s -E -v - </dev/null 2>%s 1>/dev/null' %(gcc, tmpfile))
+        is_gcc = False
+        in_incdirs = False
+        inc_dirs = []
+        lib_dirs = []
+        try:
+            if ret >> 8 == 0:
+                with open(tmpfile) as fp:
+                    for line in fp.readlines():
+                        if line.startswith("gcc version"):
+                            is_gcc = True
+                        elif line.startswith("#include <...>"):
+                            in_incdirs = True
+                        elif line.startswith("End of search list"):
+                            in_incdirs = False
+                        elif is_gcc and line.startswith("LIBRARY_PATH"):
+                            for d in line.strip().split("=")[1].split(":"):
+                                d = os.path.normpath(d)
+                                if '/gcc/' not in d:
+                                    add_dir_to_list(self.compiler.library_dirs,
+                                                    d)
+                        elif is_gcc and in_incdirs and '/gcc/' not in line:
+                            add_dir_to_list(self.compiler.include_dirs,
+                                            line.stript())
+        finally:
+            os.unlink(tmpfile)
+
+    def detect_modules(selfself):
+        # Ensure that /usr/local is always used, but the local build
+        # directories (i.e. '.' and 'Include') must be first. See issue
+        # 10520.
+        if not cross_compiling:
+            add_dir_to_list(self.compiler.library_dirs, '/usr/local/lib')
+            add_dir_to_list(self.compiler.include_dirs, '/usr/local/include')
+        # only change this for cross builds for 3.3, issues on Mageia
+        if cross_compiling:
+            self.add_gcc_paths()
+        self.add_multiarch_paths()
+
+        # Add paths specified in the environment variables LDFLAGS and
+        # CPPFLAGS for header and library files.
+        # We must get the values from the Makefile and not the environment
+        # directly since an inconsistently reproducible issue comes up where
+        # the environment variable is not set even though the value were passed
+        # into configure and stored in the Makefile (issue found on OS X 10.3).
+        for env_var, arg_name, dir_list in (
+                ('LDFLAGS', '-R', self.compiler.runtime_library_dirs),
+                ('LDFLAGS', '-L', self.compiler.library_dirs),
+                ('CPPFLAGS', '-I', self.compiler.include_dirs)):
+            env_val = sysconfig.get_config_var(env_var)
+            if env_val:
+                # To prevent optparse from raising an exception about any
+                # options in env_val that it doesn't know about we strip out
+                # all double dashes and any dasheds followed by a character
+                # that is not for the option we are dealing with.
+                #
+                # Please note that order of the regex is important! We must
+                # stipr out double-dashes first so that we don't end up with
+                # substituting "--Long" to "-Long" and thus lead to "ong" being
+                # used for a library directory.
+                env_val = re.sub(r'(^|\s+)-(-|(?!%s))' % arg_name[1],
+                                 ' ', env_val)
+                parser = optparse.OptionParser()
+                # Mask sure that allowing args interspersed with options is
+                # allowed
+                parser.allow_interspersed_args = True
+                parser.error = lambda msg: None
+                parser.add_option(arg_name, dest="dirs", action="append")
+                options = parser.parse_args(env_val.split())[0]
+                if options.dirs:
+                    for directory in reversed(options.dirs):
+                        add_dir_to_list(dir_list, directory)
+
+
 
 
 
