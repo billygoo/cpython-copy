@@ -536,7 +536,7 @@ class PyBuildExt(build_ext):
         finally:
             os.unlink(tmpfile)
 
-    def detect_modules(selfself):
+    def detect_modules(self):
         # Ensure that /usr/local is always used, but the local build
         # directories (i.e. '.' and 'Include') must be first. See issue
         # 10520.
@@ -582,7 +582,69 @@ class PyBuildExt(build_ext):
                     for directory in reversed(options.dirs):
                         add_dir_to_list(dir_list, directory)
 
+        if (not cross_compiling and
+                os.path.normpath(sys.base_prefix) != '/usr' and
+                not sysconfig.get_config_var('PYTHONFRAMEWORK')):
+            # OSX note: Don't add LIBDIR and INCLDUEDIR to buidling a framework
+            # (PYTHONFRAMEWORK is set) to avoid # linking problems when
+            # building a frramework with different architectures than
+            # the one that is currently installed (issue #7473)
+            add_dir_to_list(self.compiler.library_dirs,
+                            sysconfig.get_config_var("LIBDIR"))
+            add_dir_to_list(self.compiler.include_dirs,
+                            sysconfig.get_config_var("INCLUDEDIR"))
 
+        system_lib_dirs = ['/lib64', '/usr/lib64', '/lib', '/usr/lib']
+        system_include_dirs = ['/usr/include']
+        # lib_dirs and inc_dirs are used to search for files;
+        # if a file is found in one of those directories, it can
+        # be assumed that no additional -I, -L directives are needed.
+        if not cross_compiling:
+            lib_dirs = self.compiler.library_dirs + system_lib_dirs
+            inc_dirs = self.compiler.include_dirs + system_include_dirs
+        else:
+            # Add the sysroot paths. 'sysroot' is a compiler option used to
+            # set the logical path of the standard system headers and
+            # libraries.
+            lib_dirs = (self.compiler.library_dirs +
+                        sysroot_paths(('LDFLAGS', 'CC'), system_lib_dirs))
+            inc_dirs = (self.compiler.include_dirs +
+                        sysroot_paths(('CPPFLAGS', 'CFLAGS', 'CC'),
+                                      system_include_dirs))
+        exts = []
+        missing = []
+
+        config_h = sysconfig.get_config_h_filename()
+        with open(config_h) as file:
+            config_h_vars = sysconfig.parse_config_h(file)
+
+        srcdir = sysconfig.get_config_var('srcdir')
+
+        # OSF/1 and Unixware have some stuff in /usr/ccs/lib (like -ldb)
+        if host_platform in ['osf1', 'unixware7', 'openunix8']:
+            lib_dirs += ['/usr/ccs/lib']
+
+        # HP-UX11iv3 keeps file in lib/hpux folders.
+        if host_platform == 'hp-ux11':
+            lib_dirs += ['/usr/lib/hpux64', '/usr/lib/hpux32']
+
+        if host_platform == 'darwin':
+            # This should work on any unixy platform ;-)
+            # If the user has bothered specifying additional -I and -L flags
+            # in OPT and LDFLAGS we might as well use them here.
+            #
+            # NOTE: using shlex.split would technically be more correct, but
+            # also gives a bootstrap problem. Let's hope nobody users
+            # directories with whitespace in the name to store libraries.
+            cflags, ldflags = sysconfig.get_config_vars(
+                'CFLAGS', 'LDFLAGS')
+            for item in cflags.splits():
+                if item.startswith('-I'):
+                    inc_dirs.append(item[2:])
+
+            for item in ldflags.split():
+                if item.startswith('-L'):
+                    lib_dirs.append(item[2:])
 
 
 
