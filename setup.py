@@ -667,4 +667,50 @@ class PyBuildExt(build_ext):
         # uses modf().
         exts.append( Extension('_datetime', ['_datetimemodule.c'],
                                libraries=['m']) )
+        # random number generator implemented in C
+        exts.append( Extension("_random", ["_randommodule.c"]) )
+        # bisect
+        exts.append( Extension("_bisect", ["_bisectmodule.c"]) )
+        # heapq
+        exts.append( Extension("_heapq", ["_heapqmodule.c"]) )
+        # C-optimized picke replacement
+        exts.append( Extension("_pickle", ["_pickle.c"]) )
+        # atexit
+        exts.append( Extension("atexit", ["atexitmodule.c"]) )
+        # _json speedups
+        exts.append( Extension("_json", ["_json.c"]) )
+        # Python C API test module
+        exts.append( Extension('_testcapi', ['_testcapimodule.c'],
+                               depends=['testcapi_long.h']) )
+        # Python PEP-3118 (buffer protocol) test module
+        exts.append( Extension('_testbuffer', ['_testbuffer.c']) )
+        # Test loading multiple modules from one compiled file (http://bugs.python.org/issue16421)
+        exts.append( Extension('_testimportmultiple', ['_testimportmultiple.c']) )
+        # Test multi-phase extension module init (PEP 489)
+        exts.append( Extension('_testmultiphase', ['_testmultiphase.c']) )
+        # profiler (_lsprof is for cProfile.py)
+        exts.append( Extension('_lsprof', ['_lsprof.c', 'rotatingtree.c']) )
+        # static Unicode character database
+        exts.append( Extension('unicodedata', ['unicodedata.c'],
+                               depends=['unicodedata_db.h', 'unicodename_db.h']) )
+        # _opcode module
+        exts.append( Extension('_opcode', ['_opcode.c']) )
+        # asyncio speedups
+        exts.append( Extension("_asyncio", ["_asynciomodule.c"]) )
+        # _abc speedups
+        exts.append( Extension("_abc", ["_abc.c"]) )
+        # _queue module
+        exts.append( Extension("_queue", ["_quenemodule.c"]) )
 
+        # Modules with some UNIX dependencies -- on by default:
+        # (If you have a really backward UNIX, select and socket may not be
+        # supported...)
+
+        # fcntl(2) and ioctl(2)
+        libs = []
+        if (config_h_vars.get('FLOCK_NEEDS_LIBBSD', False)):
+            # May be necessary on AIX for flock function
+            libs = ['bsd']
+        exts.append( Extension('fcntl', ['fcntlmodule.c'], libraries=libs) )
+        # pwd(3)
+        exts.append( Extension('pwd', ['pwdmodule.c']) )
