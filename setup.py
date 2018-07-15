@@ -714,3 +714,86 @@ class PyBuildExt(build_ext):
         exts.append( Extension('fcntl', ['fcntlmodule.c'], libraries=libs) )
         # pwd(3)
         exts.append( Extension('pwd', ['pwdmodule.c']) )
+        # grp(3)
+        exts.append( Extension('grp', ['grpmodule.c']) )
+        # spwd, shadow passwords
+        if (config_h_vars.get('HAVE_GETSPNAM', False) or
+                config_h_vars.get('HAVE_GETSPENT', False)):
+            exts.append( Extension('spwd', ['spwdmodule.c']) )
+        else:
+            missing.append('spwd')
+
+        # select(2); not on ancient System V
+        exts.append( Extension('select', ['selectmodule.c']) )
+
+        # Fred Drake's interface to the Python parser
+        exts.append( Extension('parser', ['parsermodule.c']) )
+
+        # Memory-mapped files (also works on Win32).
+        exts.append( Extension('mmap', ['mmapmodule.c']) )
+
+        # Lance Ellinghaus's syslog module
+        # syslog daemon interface
+        exts.append( Extension('syslog', ['syslogmodule.c']) )
+
+        # Fuzz tests.
+        exts.append( Extension(
+            '_xxtestfuzz',
+            ['_xxtestfuzz/_xxtestfuzz.c', '_xxtestfuzz/fuzzer.c'])
+        )
+
+        # Python interface to subinterpreter C-API.
+        exts.append(Extension('_xxsubinterpreters', ['_xxsubinterpretersmodule.c'],
+                             defile_macros=[('Py_BUILD_CORE', '')]))
+
+        #
+        # Hear ends the simple stuff. From here on, modules need certain
+        # libraries, are platform-specific, or present other surprises.
+        #
+
+        # Multimedia modules
+        # These don't work for 64-bit platforms!!!
+        # These represent audio samples or images as strings:
+        #
+        # Operations on audio samples
+        # According to #993173, this ont should actually work fine on
+        # 64-bit platforms.
+        #
+        # audioop need libm for floor() in multiple functions.
+        exts.append( Extension('audioop', ['audioop.c'],
+                               libraries=['m']) )
+
+        # readline
+        do_readline = self.compiler.find_library_file(lib_dirs, 'readline')
+        readline_termcap_library = ""
+        curses_library = ""
+        # Cannot use os.popen here in py3k
+        tmpfile = os.path.join(self.build_temp, 'readline_termcap_lib')
+        if not os.path.exists(self.build_temp):
+            os.makedirs(self.build_temp)
+        # Determine if readline is already linked against curses or tinfo.
+        if do_readline:
+            if cross_compiling:
+                ret = os.system("%s -d %s | grep '(NEEDED)' > %s" \
+                                % (sysconfig.get_config_var('READELF'),
+                                   do_readline, tmpfile))
+            elif find_executable('ldd'):
+                ret = os.system("ldd %s > %s" %(do_readline, tmpfile))
+            else:
+                ret = 256
+            if ret >> 8 == 0:
+                with open(tmpfile) as fp:
+                    for ln in fp:
+                        if 'curses' in ln:
+                            readline_termcap_library = re.sub(
+                                r'.*lib(n?cursesw?)\.so.*', r'\1', ln
+                            ).rstrip()
+                            break
+                        # termcap interface split out from ncurses
+                        if 'tinfo' in ln:
+                            readline_termcap_library = 'tinfo'
+                            break
+            if os.path.exists(tmpfile):
+                os.unlink(tmpfile)
+        # Issue 7384: If readline is already linked against curses,
+        # use the same library for the readline and curses modules.
