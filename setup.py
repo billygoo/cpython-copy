@@ -797,3 +797,117 @@ class PyBuildExt(build_ext):
                 os.unlink(tmpfile)
         # Issue 7384: If readline is already linked against curses,
         # use the same library for the readline and curses modules.
+        if 'curses' in readline_termcap_library:
+            curses_library = readline_termcap_library
+        elif self.compiler.find_library_file(lib_dirs, 'ncursesw'):
+            curses_library = 'ncursesw'
+        elif self.compiler.find_library_file(lib_dirs, 'ncurses'):
+            curses_library = 'ncurses'
+        elif self.compiler.find_library_file(lib_dirs, 'curses'):
+            curses_library = 'curses'
+
+        if host_platform == 'darwin':
+            os_release = int(os.uname()[2].split('.')[0])
+            dep_target = sysconfig.get_config_var('MACOSX_DEPLOYMENT_TARGET')
+            if (dep_target and
+                    (tuple(int(n) for n in dep_target.split('.')[0:2])
+                        < (10, 5) ) ):
+                os_release = 8
+            if os_release < 9:
+                # MacOSX 10.4 has a broken readline. Don't try to build
+                # the readline module unless the user has installed a fixed
+                # readline package
+                if find_file('readline/rlconf.h', inc_dirs, []) is None:
+                    do_readline = False
+        if do_readline:
+            if host_platform == 'darwin' and os_release < 9:
+                # In every directory on the search path search for a dynamic
+                # library and then a static library, instead of first lokking
+                # for dynamic libraries on the entire path.
+                # This way a statically linked custom readline gets picked up
+                # before the (possibly broken) dynamic library in /usr/lib.
+                readline_extra_link_args = ('-Wl,-search_paths_first',)
+            else:
+                readline_extra_link_args = ()
+
+            readline_libs = ['readline']
+            if readline_termcap_library:
+                pass # Issue 7384: Already linked against curses or tinfo.
+            elif curses_library:
+                readline_libs.append(curses_library)
+            elif self.compiler.find_library_file(lib_dirs +
+                                                    ['/usr/lib/termcap'],
+                                                    'termcap'):
+                readline_libs.append('termcap')
+            exts.append( Extension('readline', ['readline.c'],
+                                   library_dirs=['/usr/lib/termcap'],
+                                   extra_link_args=readline_extra_link_args,
+                                   libraries=readline_libs) )
+        else:
+            missing.append('readline')
+
+        # crypt module.
+
+        if self.compiler.find_library_file(lib_dirs, 'crypt'):
+            libs = ['crypt']
+        else:
+            libs = []
+        exts.append( Extension('_crypt', ['_cryptmodule.c'], libraries=libs) )
+
+        # CSV files
+        exts.append( Extension('_csv', ['_csv.c']) )
+
+        # POSIX subprocess module helper
+        exts.append( Extension('_posixsubprocess', ['_posixsubprocess.c']) )
+
+        # socket(2)
+        exts.append( Extension('_socket', ['socketmodule.c'],
+                               depends = ['socketmodule.h']) )
+        # Detect SSL support for the socket module (vis _ssl)
+        ssl_ext, hashlib_ext = self._detect_openssl(inc_dirs, lib_dirs)
+        if ssl_ext is not None:
+            exts.append(ssl_ext)
+        else:
+            missing.append('_ssl')
+        if hashlib_ext is not None:
+            exts.append(hashlib_ext)
+        else:
+            missing.append('_hashlib')
+
+        # We always compile these even when OpenSSL is available (issue #14693).
+        # It's harmless and the object code is tiny (40-50 KiB per module,
+        # only loaded when actually used).
+        exts.append( Extension('_sha256', ['sha256module.c'],
+                               depends=['hashlib.h']) )
+        exts.append( Extension('_sha512', ['sha512module.c'],
+                               depends=['hashlib.h']) )
+        exts.append( Extension('_md5', ['md5module.c'],
+                               depends=['hashlib.h']) )
+        exts.append( Extension('_sha1', ['sha1module.c'],
+                               depends=['hashlib.h']) )
+
+        blake2_deps = glob(os.path.join(os.getcwd(), srcdir,
+                                        'Modules/_blake2/impl/*'))
+        blake2_deps.append('hashlib.h')
+
+        exts.append( Extension('_blake2',
+                               ['_blake2/blake2module.c',
+                                '_blake2/blake2b_impl.c',
+                                '_blake2/blake2s_impl.c'],
+                               depends=blake2_deps) )
+
+        sha3_deps = glob(os.path.join(os.getcwd(), srcdir,
+                                      'Modules/_sha3/kcp/*'))
+        sha3_deps.append('hashlib.h')
+        exts.append( Extension('_sha3',
+                               ['_sha3/sha3module.c'],
+                               depends=sha3_deps))
+
+        # Modules that provide persistent dictionary-like semantics. You will
+        # probably want to arrange for at least one of them to be available on
+        # your machine, though none are defined by default because of library
+        # dependencies.  The Python module dbm/__init__.py provides an
+        # implementation independent wrapper for these; dbm/dumb.py provides
+        # similar functionality (but slower of course) implemented in Python.
+
+
