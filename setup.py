@@ -910,4 +910,37 @@ class PyBuildExt(build_ext):
         # implementation independent wrapper for these; dbm/dumb.py provides
         # similar functionality (but slower of course) implemented in Python.
 
+        # Sleepycat^WOracle Berkeley DB interface.
+        #  http://www.oracle.com/database/berkeley-db/db/index.html
+        #
+        # This requires the Sleepycat^WOracle DB code. The supported versions
+        # are set below. Visit the URL above to download
+        # a release.  Most open source OSes come with one or more
+        # versions of BerkeleyDB already installed.
+
+        max_db_ver = (5, 3)
+        min_db_ver = (3, 3)
+        db_setup_debug = False      # verbose debug prints from this script?
+
+        def allow_db_ver(db_ver):
+            """Returns a boolean if the given BerkeleyDB version is acceptable.
+
+            Args:
+              db_ver: A tuple of the version to verify.
+            """
+            if not (min_db_ver <= db_ver <= max_db_ver):
+                return False
+            return True
+
+        def gen_db_minor_ver_nums(major):
+            if major == 4:
+                for x in range(max_db_ver[1]+1):
+                    if allow_db_ver((4, x)):
+                        yield x
+            elif major == 3:
+                for x in (3,):
+                    if allow_db_ver((3, x)):
+                        yield x
+            else:
+                raise ValueError("unknown major BerkeleyDB version", major)
 
