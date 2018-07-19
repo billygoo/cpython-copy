@@ -944,3 +944,84 @@ class PyBuildExt(build_ext):
             else:
                 raise ValueError("unknown major BerkeleyDB version", major)
 
+        # construct a list of paths to look for the header file in on
+        # top of the normal inc_dirs.
+        db_inc_paths = [
+            '/usr/include/db4',
+            '/usr/local/include/db4',
+            '/opt/sfw/include/db4',
+            '/usr/include/db3',
+            '/usr/local/include/db3',
+            '/opt/sfw/include/db3',
+            # Find defaults (http://fink.sourceforge.net/)
+            '/sw/include/db4',
+            '/sw/include/db3',
+        ]
+        # 4.x minor number specific paths
+        for x in gen_db_minor_ver_nums(4):
+            db_inc_paths.append('/usr/include/db4%d' % x)
+            db_inc_paths.append('/usr/include/db4.%d' % x)
+            db_inc_paths.append('/usr/local/BerkeleyDB.4.%d/include' % x)
+            db_inc_paths.append('/usr/local/include/db4%d' % x)
+            db_inc_paths.append('/pkg/db-4.%d/include' % x)
+            db_inc_paths.append('/opt/db-4.%d/include' % x)
+            # MacPorts default (http://www.macports.org/)
+            db_inc_paths.append('/opt/local/include/db4%d' % x)
+        # 3.x minor number specific paths
+        for x in gen_db_minor_ver_nums(3):
+            db_inc_paths.append('/usr/include/db3%d' % x)
+            db_inc_paths.append('/usr/local/BerkeleyDB.3.%d/include' % x)
+            db_inc_paths.append('/usr/local/include/db3%d' % x)
+            db_inc_paths.append('/pkg/db-3.%d/include' % x)
+            db_inc_paths.append('/opt/db-3.%d/include' % x)
+
+        if cross_compiling:
+            db_inc_paths = []
+
+        # Add some common subdirectories for sleepycat DB to the list,
+        # based on the standard include directories. This way DB3/4 gets
+        # picked up when it is installed in a non-standard prefix and
+        # the user has added that prefix into inc_dirs.
+        std_variants = []
+        for dn in inc_dirs:
+            std_variants.append(os.path.join(dn, 'db3'))
+            std_variants.append(os.path.join(dn, 'db4'))
+            for x in gen_db_minor_ver_nums(4):
+                std_variants.append(os.path.join(dn, "db4%d"%x))
+                std_variants.append(os.path.join(dn, "db4.%d"%x))
+            for x in gen_db_minor_ver_nums(3):
+                std_variants.append(os.path.join(dn, "db3%d"%x))
+                std_variants.append(os.path.join(dn, "db3.%d"%x))
+
+        db_inc_paths = std_variants + db_inc_paths
+        db_inc_paths = [p for p in db_inc_paths if os.path.exists(p)]
+
+        db_ver_inc_map = {}
+
+        if host_platform == 'darwin':
+            sysroot = macosx_sdk_root()
+
+        class db_found(Exception): pass
+        try:
+            # See whether there is a Sleepycat header in the standard
+            # search path.
+            for d in inc_dirs + db_inc_paths:
+                f = os.path.join(d, "db.h")
+                if host_platform == 'darwin' and is_macosx_sdk_path(d):
+                    f = os.path.join(sysroot, d[1:], "db.h")
+
+                if db_setup_debug: print("db: looking for db.h in", f)
+                if os.path.exists(f):
+                    with open(f, 'rb') as file:
+                        f = file.read()
+                    m = re.search(br"#define\WDB_VERSION_MAJOR\W(\d+)", f)
+                    if m:
+                        db_major = int(m.group(1))
+                        m = re.search(br"#define\WDB_VERSION_MINOR\W(\d+)", f)
+                        db_minor = int(m.group(1))
+                        db_ver = (db_major, db_minor)
+
+                        # Avoid 4.6 prior to 4.6.21 due to a BerkeleyDB bug
+                        if db_ver == (4, 6):
+                            m = re.search(br"#define\WDB_VERSION_PATCH\W(\d+)", f)
+                            db_patch = int(m.group(1))
