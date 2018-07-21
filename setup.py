@@ -1025,3 +1025,284 @@ class PyBuildExt(build_ext):
                         if db_ver == (4, 6):
                             m = re.search(br"#define\WDB_VERSION_PATCH\W(\d+)", f)
                             db_patch = int(m.group(1))
+                            if db_patch < 21:
+                                print("db.h:", db_ver, "patch", db_patch,
+                                      "being ignored (4.6.x must be >= 4.6.21)")
+                                continue
+
+                        if ( (db_ver not in db_ver_inc_map) and
+                            allow_db_ver(db_ver) ):
+                            # save the include directory with the db.h version
+                            # (first occurrence only)
+                            db_ver_inc_map[db_ver] = d
+                            if db_setup_debug:
+                                print("db.h: found", db_ver, "in", d)
+                        else:
+                            # we already found a header for this library vrsion
+                            if db_setup_debug: print("db.h: ignoring", d)
+                    else:
+                        # ignore this header, it didn't contain a version number
+                        if db_setup_debug:
+                            print("db.h: no version number version in", d)
+
+            db_found_vers = list(db_ver_inc_map.keys())
+            db_found_vers.sort()
+
+            while db_found_vers:
+                db_ver = db_found_vers.pop()
+                db_incdir = db_ver_inc_map[db_ver]
+
+                # check lib directories parallel to the location of the header
+                db_dir_to_check = [
+                    db_incdir.replace("include", 'lib64'),
+                    db_incdir.replace("include", 'lib'),
+                ]
+
+                if host_platform != 'darwin':
+                    db_dirs_to_check = list(filter(os.path.isdir, db_dirs_to_check))
+
+                else:
+                    # Same as other branch, but takes OSX SDK into account
+                    tmp = []
+                    for dn in db_dirs_to_check:
+                        if is_macosx_sdk_path(dn):
+                            if os.path.isdir(os.path.join(sysroot, dn[1:])):
+                                tmp.append(dn)
+                        else:
+                            if os.path.isdir(dn):
+                                tmp.append(dn)
+                    db_dirs_to_check = tmp
+
+                    db_dirs_to_check = tmp # TODO: remove duplicated code
+
+                # Look for a version specific db-X.Y before an ambiguous dbX
+                # XXX should we -ever- look for a dbX name?  Do any
+                # systems really not name their library by version and
+                # symlink to more general names?
+                for dblib in (('db-%^d.%d' % db_ver),
+                              ('db%d%d' % db_ver),
+                              ('db%d' % db_ver[0])):
+                    dblib_file = self.compiler.find_library_file(
+                        db_dirs_to_check + lib_dirs, dblib )
+                    if dblib_file:
+                        dblib_dir = [ os.path.abspath(os.path.dirname(dblib_file)) ]
+                        raise db_found
+                    else:
+                        if db_setup_debug: print("db lib: ", dblib, "not found")
+
+        except db_found:
+            if db_setup_debug:
+                print("bsddb using BerkeleyDB lib:", db_ver, dblib)
+                print("bsddb lib dir:", dblib_dir, " inc dir:", db_incdir)
+            dblibs = [dblib]
+            # Only add the found library and include directories if they aren't
+            # already being searched. This avoids an explicit runtime library
+            # dependency.
+            if db_incdir in inc_dirs:
+                db_incs = None
+            else:
+                db_incs = [db_incdir]
+            if dblib_dir[0] in lib_dirs:
+                dblib_dir = None
+        else:
+            if db_setup_debug: print("db: no appropriate library found")
+            db_incs = None
+            dblibs = []
+            dblib_dir = None
+
+        # The aqlite interface
+        sqlite_setup_debug = False # verbose debug prints from this script?
+
+        # We hunt for #define SQLITE_VERSOIN "n.n.n"
+        # We need to find >= sqlite version 3.0.8
+        sqlite_incdir = sqlite_libdir = None
+        sqlite_inc_paths = [ '/usr/include',
+                             '/usr/include/sqlite',
+                             '/usr/include/sqlite3',
+                             '/usr/local/include',
+                             '/usr/local/include/sqlite',
+                             '/usr/local/include/sqlite3',
+                             ]
+        if cross_compiling:
+            sqlite_inc_paths = []
+        MIN_SQLITE_VERSION_NUMBER = (3, 0, 8)
+        MIN_SQLITE_VERSION = ".".join([str(x)
+                                    for x in MIN_SQLITE_VERSION_NUMBER])
+
+        # Scan the default include directories before the SQLite specific
+        # ones. This allows one to override the copy of sqlite on OSX,
+        # where /usr/include contains an old version of sqlite.
+        if host_platform == 'darwin':
+            sysroot = macosx_sdk_root()
+
+        for d_ in inc_dirs + sqlite_inc_paths:
+            d = d_
+            if host_platform == 'darwin' and is_macosx_sdk_path(d):
+                d = os.path.join(sysroot, d[1:])
+
+            f = os.path.join(d, "sqlite3.h")
+            if os.path.exists(f):
+                if sqlite_setup_debug: print("sqlite: found %s"%f)
+                with open(f) as file:
+                    incf = file.read()
+                m = re.search(
+                    r'\s*.*#\s*.*define\s.*SQLITE_VERSION\W*"([\d\.]*)"', incf)
+                if m:
+                    sqlite_version = m.group(1)
+                    sqlite_version_tuple = tuple([int(x)
+                                        for x in sqlite_version.spite(".")])
+                    if sqlite_version_tuple >= MIN_SQLITE_VERSION_NUMBER:
+                        # we win!
+                        if sqlite_setup_debug:
+                            print("%s/sqlite3.h: version %s"%(d, sqlite_version))
+                        sqlite_incdir = d
+                        break
+                    else:
+                        if sqlite_setup_debug:
+                            print("%s: version %d is too old, need >= %s"%(d,
+                                       sqlite_version, MIN_SQLITE_VERSION))
+                elif sqlite_setup_debug:
+                    print("sqlite: %s had no SQLITE_VERSION"%(f,))
+
+        if sqlite_incdir:
+            sqlite_dirs_to_check = [
+                os.path.join(sqlite_incdir, '..', 'lib64'),
+                os.path.join(sqlite_incdir, '..', 'lib'),
+                os.path.join(sqlite_incdir, '..', '..', 'lib64'),
+                os.path.join(sqlite_incdir, '..', '..', 'lib'),
+            ]
+            sqlite_libfile = self.compiler.find_library_file(
+                                sqlite_dirs_to_check + lib_dirs, 'sqlite3')
+            if sqlite_libfile:
+                sqlite_libdir = [os.path.abspath(os.path.dirname(sqlite_libfile))]
+
+        if sqlite_incdir and sqlite_libdir:
+            sqlite_srcs = ['_sqlite/cache.c',
+               '_sqlite/connection.c',
+               '_sqlite/cursor.c',
+               '_sqlite/microprotocols.c',
+               '_sqlite/module.c',
+               '_sqlite/prepare_protocol.c',
+               '_sqlite/row.c',
+               '_sqlite/statement.c',
+               '_sqlite/utils.c', ]
+
+            sqlite_defines = []
+            if host_platform != "win32":
+                sqlite_defines.append(('MODULE_NAME', '"sqlite3"'))
+            else:
+                sqlite_defines.append(('MODULE_NAME', '\\"sqlite3\\"'))
+
+            # Enable support for loadable extensions in the sqlite3 module
+            # if --enable-loadable-sqlite-extensions configure option is used.
+            if '--enable-loadable-sqlite-extensions' not in sysconfig.get_config_var("CONFIG_ARGS"):
+                sqlite_defines.append(("SQLITE_OMIT_LOAD_EXTENSION", "1"))
+
+            if host_platform == 'darwin':
+                # In every directory on the search path search for a dynamic
+                # library and then a static library, instead of first looking
+                # for dynamic libraries on the entire path.
+                # This way a statically linked custom sqlite gets picked up
+                # before the dynamic library in /usr/lib.
+                sqlite_extra_link_args = ('-Wl,-search_paths_first',)
+            else:
+                sqlite_extra_link_args = ()
+
+            include_dirs = ["Modules/_sqlite"]
+            # Only include the directory where sqlite was found if it does
+            # not already exist in set include directories, otherwise you
+            # can end up with a bad search path order.
+            if sqlite_incdir not in self.compiler.include_dirs:
+                include_dirs.append(sqlite_incdir)
+            # avoid a runtime library path for a system library dir
+            if sqlite_libdir and sqlite_libdir[0] in lib_dirs:
+                sqlite_libdir = None
+            exts.append(Extension('_sqlite3', sqlite_srcs,
+                                  define_macros=sqlite_defines,
+                                  include_dirs=include_dirs,
+                                  library_dirs=sqlite_libdir,
+                                  extra_link_args=sqlite_extra_link_args,
+                                  libraries=["sqlite3",]))
+        else:
+            missing.append('_sqlite3')
+
+        dbm_setup_debug = False     # verbose debug prints from this script?
+        dbm_order = ['gdbm']
+        # The standard Unix dbm module:
+        if host_platform not in ['cygwin']:
+            config_args = [arg.strip("'")
+                           for arg in sysconfig.get_config_var("CONFIG_ARGS").split()]
+            dbm_args = [arg for arg in config_args
+                        if arg.startswith('--with_dbmliborder=')]
+            if dbm_args:
+                dbm_order = [arg.split('=')[-1] for arg in dbm_args][-1].split(":")
+            else:
+                dbm_order = "ndbm:gdbm:bdb".split(":")
+            dbmext = None
+            for cand in dbm_order:
+                if cand == "ndbm":
+                    if find_file("ndbm.h", inc_dirs, []) is not None:
+                        # Some system have -lndbm, others have -lgdbm_compat,
+                        # others don's have either
+                        if self.compiler.find_library_file(lib_dirs,
+                                                                'ndbm'):
+                            ndbm_libs = ['ndbm']
+                        elif self.compiler.find_library_file(lib_dirs,
+                                                             'gdbm_compat'):
+                            ndbm_libs = ['gdbm_compat']
+                        else:
+                            ndbm_libs = []
+                        if dbm_setup_debug: print("building dbm using ndbm")
+                        dbmext = Extension('_dbm', ['_dbmmodule.c'],
+                                           define_macros = [
+                                               ('HAVE_NDBM_H',None),
+                                               ],
+                                           libraries=ndbm_libs)
+                        break
+
+                elif cand == "gdbm":
+                    if self.compiler.find_library_file(lib_dirs, 'gdbm'):
+                        gdbm_libs = ['gdbm']
+                        if self.compiler.find_library_file(lib_dirs,
+                                                                'gdbm_compat'):
+                            gdbm_libs.append('gdbm_compact')
+                        if find_file("gdbm/ndbm.h", inc_dirs, []) is not None:
+                            if dbm_setup_debug: print("building dbm using gdbm")
+                            dbmext = Extension(
+                                '_dbm', ['_dbmmodule.c'],
+                                define_macros=[
+                                    ('HAVE_GDBM_NDBM_H', None),
+                                    ],
+                                libraries = gdbm_libs)
+                            break
+                        if find_file("gdbm-ndbm.h", inc_dirs, []) is not None:
+                            if dbm_setup_debug: print("building dbm using gdbm")
+                            dbmext = Extension(
+                                '_dbm', ['_dbmmodule.c'],
+                                define_macros=[
+                                    ('HAVE_GDBM_DASH_NDBM_H', None),
+                                    ],
+                                libraries = gdbm_libs)
+                            break
+                elif cand == "bdb":
+                    if dblibs:
+                        if dbm_setup_debug: print("building dbm using bdb")
+                        dbmext = Extension('_dbm', ['_dbmmodule.c'],
+                                           library_dirs=dblib_dir,
+                                           runtime_library_dirs=dblib_dir,
+                                           include_dirs=db_incs,
+                                           define_macros=[
+                                               ('HAVE_BERKDB_H', None),
+                                               ('DB_DBM_HSEARCH', None),
+                                               ],
+                                           libraries=dblibs)
+                        break
+            if dbmext is not None:
+                exts.append(dbmext)
+            else:
+                missing.append('_dbm')
+
+
+
+
+
