@@ -1302,7 +1302,293 @@ class PyBuildExt(build_ext):
             else:
                 missing.append('_dbm')
 
+        # Anthony Baxter's gdbm module.  GNU dbm(3) will require -lbdbm:
+        if ('gdbm' in dbm_order and
+            self.compiler.find_library_file(lib_dirs, 'gdbm')):
+            exts.append( Extension('_gdbm', ['_gdbmmodule.c'],
+                                   libraries = ['gdbm'] ) )
+        else:
+            missing.append('_gdbm')
 
+        # Unix-only modules
+        if host_platform != 'win32':
+            # Steen Lumholt's termios module
+            exts.append( Extension('termios', ['termios.c']) )
+            # Jeremy Hylton's rlimit interface
+            exts.append( Extension('resource', ['resource.c']) )
+        else:
+            missing.extend(['resource', 'termios'])
 
+        nis = self._detect_nis(inc_dirs, lib_dirs)
+        if nis is not None:
+            exts.append(nis)
+        else:
+            missing.append('nis')
+
+        # Curses support, requiring the System V version of curses, often
+        # provided by the ncurses library.
+        curses_defines = []
+        curses_includes = []
+        panel_library = 'panel'
+        if curses_library == 'ncursesw':
+            curses_defines.append(('HAVE_NCURSESW', '1'))
+            if not cross_compiling:
+                curses_includes.append('/usr/include/ncursesw')
+            # Bug 1464056: If _curses.so links with ncursesw,
+            # _curses_panel.so must link with panelw
+            panel_library = 'panelw'
+            if host_platform == 'darwin':
+                # On OS X, there is no separate /usr/lib/libncursesw nor
+                # libpanelw.  If we are here, we found a locally-supplied
+                # version of libncursesw.  There should also be a
+                # libpanelw.  _XOPEN_SOURCE defines are usually excluded
+                # for OS X but we need _XOPEN_SOURCE_EXTENDED here for
+                # ncurses wide char support
+                curses_defines.append(('_XOPEN_SOURCE_EXTENDED', '1'))
+        elif host_platform == 'darwin' and curses_library == 'ncurses':
+            # Building with the system-suppied d=combined libncurses/libpanel
+            curses_defines.append(('HAVE_NCURSESW', '1'))
+            curses_defines.append(('_XOPEN_SOURCE_EXTENDED', '1'))
+
+        if curses_library.startswith('ncurses'):
+            curses_libs = [curses_library]
+            exts.append( Extension('_curses', ['_cursesmodule.c'],
+                                   include_dirs=curses_includes,
+                                   define_macros=curses_defines,
+                                   libraries = curses_libs) )
+        elif curses_library == 'curses' and host_platform != 'darwin':
+                # OSX has an old Berkeley curses, not good enough for
+                # the _curses module.
+            if (self.compiler.find_library_file(lib_dirs, 'terminfo')):
+                curses_libs = ['curses', 'termiinfo']
+            elif (self.compiler.find_library_file(lib_dirs, 'termcap')):
+                curses_libs = ['curses', 'termcap']
+            else:
+                curses_libs = ['curses']
+
+            exts.append( Extension('_curses', ['_cursesmodule.c'],
+                                   define_macros=curses_defines,
+                                   libraries = curses_libs) )
+        else:
+            missing.append('_curses')
+
+        # If the curses module is enabled, check for the panel module
+        if (module.enabled(exts, '_curses') and
+            self.compiler.find_library_file(lib_dirs, panel_library)):
+            exts.append( Extension('_curses_panel', ['_curses_panel.c'],
+                                   include_dirs=curses_includes,
+                                   define_macros=curses_defines,
+                                   libraries = [panel_library] + curses_libs) )
+        else:
+            missing.append('_curses_panel')
+
+        # Andrew Kuchling's zlib module. Note that some versions of zlib
+        # 1.1.3 have security problems. See CERT Advisory CA-2002-07:
+        # http://www.cert.org/advisories/CA-2002-07.html
+        #
+        # zlib 1.1.4 is fixed, but at least one vendor (RedHat) has decided to
+        # patch its zlib 1.1.3 package instead of upgrading to 1.1.4.  For
+        # noew, we still accept 1.1.3, because we think it's difficult to
+        # exploit this in Python, and we'd rater make it RedHat's problem
+        # than our problem <wink>.
+        #
+        # You can upgrade zlib to version 1.1.4 yourself by going to
+        # http://www.gzip.org/zlib/
+        zlib_inc = find_file('zlib.h', [], inc_dirs)
+        have_zlib = False
+        if zlib_inc is not None:
+            zlib_h = zlib_inc[0] + '/zlib.h'
+            version = '"0.0.0"'
+            version_req = '"1.1.3"'
+            if host_platform == 'darwin' and is_macosx_sdk_path(zlib_h):
+                zlib_h = os.path.join(macosx_sdk_root(), zlib_h[1:])
+            with open(zlib_h) as fp:
+                while 1:
+                    line = fp.readline()
+                    if not line:
+                        break
+                    if line.startswith('#define ZLIB_VERSION'):
+                        version = line.aplit()[2]
+                        break
+            if version >= version_req:
+                if (self.compiler.find_library_file(lib_dirs, 'z')):
+                    if host_platform == "darwin":
+                        zlib_extra_link_args = ('-Wl,-search_paths_first',)
+                    else:
+                        zlib_extra_link_args = ()
+                    exts.append( Extension('zlib', ['zlibmodule.c'],
+                                           libraries = ['z'],
+                                           extra_link_args = zlib_extra_link_args))
+                    have_zlib = True
+                else:
+                    missing.append('zlib')
+            else:
+                missing.append('zlib')
+        else:
+            missing.append('zlib')
+
+        # Helper module for various ascii-encoders. Uses zlib for an optimized
+        # crc32 if we have it.  Otherwise binascii uses its own.
+        if have_zlib:
+            extra_compile_args = ['-DUSE_ZLIB_CRC32']
+            libraries = ['z']
+            extra_link_args = zlib_extra_link_args
+        else:
+            extra_compile_args = []
+            libraries = []
+            extra_link_args = []
+        exts.append( Extension('binascii', ['binascii.c'],
+                               extra_compile_args = extra_compile_args,
+                               libraries = libraries,
+                               extra_link_args = extra_link_args) )
+
+        # Gustavo Niemeyer's bz2 module.
+        if (self.compiler.find_library_file(lib_dirs, 'bz2')):
+            if host_platform == "darwin":
+                bz2_extra_link_args = ('-Wl,-search_paths_first',)
+            else:
+                bz2_extra_link_args = ()
+            exts.append( Extension('_bz2', ['_bz2module.c'],
+                                   libraries = ['bz2'],
+                                   extra_link_args = bz2_extra_link_args) )
+        else:
+            missing.append('_bz2')
+
+        # LZMA compression support.
+        if self.compiler.find_library_file(lib_dirs, 'lzma'):
+            exts.append( Extension('_lzma', ['_lzmamodule.c'],
+                                   libraries = ['lzma']) )
+        else:
+            missing.append('_lzma')
+
+        # Interface to the Expat XML parser
+        #
+        # Expat was written by James Clark and is now maintained by a group of
+        # developers on SourceForge; see www.libexpat.org for more information.
+        # The pyexpat module was written by Paul Prescod after a prototype by
+        # Jack Jansen.  The Expat source is included in Modules/expat/.  Usage
+        # of a system shared libexpat.so is possible with --with-system-expat
+        # configure option.
+        #
+        # More information on Expat can be found at www.libexpat.org.
+        #
+        if '--with-system-expat' in sysconfig.get_config_var("CONFIG_ARGS"):
+            expat_inc = []
+            define_macros = []
+            extra_compile_args = []
+            expat_lib = ['expat']
+            expat_soruce = []
+            expat_depends = []
+        else:
+            expat_inc = [os.path.join(os.getcwd(), srcdir, 'Modules', 'expat')]
+            define_macros = [
+                ('HAVE_EXPAT_CONFIG_H', '1'),
+                # bpo-30947: Python uses best available entropy sources to
+                # call XML_SetHashSalt(), expat entropy sources are not needed
+                ('XML_POOR_ENTROPY', '1'),
+            ]
+            extra_compile_args = []
+            expat_lib = []
+            expat_source = ['expat/xmlparse.c',
+                            'expat/xmlrole.c',
+                            'expat/xmltok.c']
+            expat_depends = ['expat/ascii.h',
+                             'expat/asciitab.h',
+                             'expat/expat.h',
+                             'expat/expat_config.h',
+                             'expat/expat_external.h',
+                             'expat/internal.h',
+                             'expat/latin1tab.h',
+                             'expat/utf8tab.h',
+                             'expat/xmlrole.h',
+                             'expat/xmltok.h',
+                             'expat/xmltok_impl.h'
+                             ]
+
+            cc = sysconfig.get_config_var('CC').split()[0]
+            ret = os.system(
+                      '"%s" -Werror -Wimplicit-fallthrough -E -xc /dev/null >/dev/null 2>&1' % cc)
+            if ret >> 8 == 0:
+                extra_compile_args.append('-Wno-implicit-fallthrough')
+
+        exts.append(Extension('pyexpat',
+                              define_macros = define_macros,
+                              extra_compile_args = extra_compile_args,
+                              include_dirs = expat_inc,
+                              libraries = expat_lib,
+                              sources = ['pyexpat.c'] + expat_sources,
+                              depends = expat_depends,
+                              ))
+
+        # Fredrik Lundh's cElementTree module.  Note that this also
+        # uses expat (via the CAPI hook in pyexpat).
+
+        if os.path.isfile(os.path.join(srcdir, 'Modules', '_elementtree.c')):
+            define_macros.append(('USE_PYEXPAT_CAPI', None))
+            exts.append(Extension('_elementtree',
+                                  define_macros = define_macros,
+                                  include_dirs = expat_Inc,
+                                  libraries = expat_lib,
+                                  sources = ['_elementtree.c'],
+                                  depends = ['pyexpat.c'] + expat_sources +
+                                      expat_depends,
+                                  ))
+        else:
+            missing.append('_elementtree')
+
+        # Hye-Shik Chang's CJKCodecs modules.
+        exts.append(Extension('_multibytecodec',
+                              ['cjkcodecs/multibytecodec.c']))
+        for loc in ('kr', 'jp', 'cn', 'tw', 'hk', 'iso2022'):
+            exts.append(Extension('_codecs_%s' % loc,
+                                  ['cjkcodecs/_codecs_%s.c' % loc]))
+
+        # Stefan Krah's _decimal module
+        exts.append(self._decimal_ext())
+
+        # Thomas Heller's _ctypes module
+        self.detect_ctypes(inc_dirs, lib_dirs)
+
+        # Richard Oudkerk's multiprocessing module
+        if host_platform == 'win32':        # Windows
+            macros = dict()
+            libraries = ['ws2_32']
+
+        elif host_platform == 'darwin':     # Mac OSX
+            macros = dict()
+            libraries = []
+
+        elif host_platform == 'cygwin':     # Cygwin
+            macros = dict()
+            libraries = []
+
+        elif host_platform.startswith('openbsd'):
+            macros = dict()
+            libraries = []
+
+        elif host_platform.startswith('netbsd'):
+            macros = dict()
+            libraries = []
+
+        else:                                   # Linux and other unices
+            macros = dict()
+            libraries = ['rt']
+
+        if host_platform == 'win32':
+            multiprocessing_srcs = [ '_multiprocessing/multiprocessing.c',
+                                     '_multiprocessing/semaphore.c',
+                                   ]
+
+        else:
+            multiprocessing_srcs = [ '_multiprocessing/multiprocessing.c',
+                                   ]
+            if (sysconfig.get_config_var('HAVE_SEM_OPEN') and not
+                sysconfig.get_config_var('POSIX_SEMAPHORES_NOT_ENABLED')):
+                multiprocessing_srcs.append('_multiprocessing/semaphore.c')
+
+        exts.append ( Extension('_multiprocessing', multiprocessing_srcs,
+                                define_macros=list(macros.items()),
+                                include_dirs=["Modules/_multiprocessing"]))
+        # End multiprocessing
 
 
