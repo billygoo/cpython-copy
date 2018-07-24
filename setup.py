@@ -1591,4 +1591,172 @@ class PyBuildExt(build_ext):
                                 include_dirs=["Modules/_multiprocessing"]))
         # End multiprocessing
 
+        # Platform-specific libraries
+        if host_platform.startswith(('linux', 'freebsd', 'gnukfreebsd')):
+            exts.append( Extension('ossaudiodev', ['ossaudiodev.c']) )
+        else:
+            missing.append('ossaudiodev')
 
+        if host_platform == 'darwin':
+            exts.append(
+                        Extension('_scproxy', ['_scproxy.c'],
+                        extra_link_args=[
+                            '-framework', 'SystemConfiguration',
+                            '-framework', 'CoreFoundation',
+                         ]))
+
+        self.extensions.extend(exts)
+
+        # Call the method for detecting whether _tkinter can be compiled
+        self.detect_tkinter(inc_dirs, lib_dirs)
+
+        if '_tkinter' not in [e.name for e in self.extensions]:
+            missing.append('_tkinter')
+
+        # Build the _uuid module if possible
+        uuid_incs = find_file("uuid.h", inc_dirs, ["/usr/include/uuid"])
+        if uuid_incs is not None:
+            if self.compiler.find_library_file(lib_dirs, 'uuid'):
+                uuid_libs = ['uuid']
+            else:
+                uuid_libs = []
+            self.extensions.append(Extension('_uuid', ['_uuidmodule.c'],
+                                   libraries=uuid_libs,
+                                   include_dirs=uuid_incs))
+        else:
+            missing.append('_uuid')
+
+##         # Uncomment these lines if you want to play with xxmodule.c
+##         ext = Extension('xx', ['xxmodule.c'])
+##         self.extensions.append(ext)
+
+        if 'd' not in sysconfig.get_config_var('ABIFLAGS'):
+            ext = Extension('xxlimited', ['xxlimited.c'],
+                            define_macros=[('Py_LIMITED_API', '0x03050000')])
+            self.extensions.append(ext)
+
+        return missing
+
+    def detect_tkinter_explicitly(self):
+        # Build _tkinter using explicit locations for Tcl/Tk.
+        #
+        # This is enabled when both arguments are given to ./configure:
+        #
+        #     --with-tcltk-includes="-I/path/to/tclincludes \
+        #                            -I/path/to/tkincludes"
+        #     --with-tcltk-libs="-L/path/to/tcllibs -ltclm.n \
+        #                        -L/path/to/tklibs -ltkm.n"
+        #
+        # These values can also be specified or overridden via make:
+        #   make TCLTK_INCLUDES="..." TCLTK_LIBS="..."
+        #
+        # This can be useful for building and testing tkinter with multiple
+        # versions of Tcl/Tk.  Note that a build of Tk depends on a particular
+        # build of Tcl so you need to specify both arguments and use care when
+        # overriding
+
+        # The _TCLTK variables are created in the Makefile sharedmods target.
+        tcltk_include = os.environ.get('_TCLTK_INCLUDES')
+        tcltk_libs = os.environ.get('_TCLTK_LIBS')
+        if not (tcltk_include and tcltk_libs):
+            # Resume default configuration search.
+            return 0
+
+        extra_compile_args = tcltk_includes.split()
+        extra_link_args = tcltk_libs.split()
+        ext = Extension('_tkinter', ['_tkinter.c', 'tkappinit.c'],
+                        define_macros=[('WITH_APPINIT', 1)],
+                        extra_compile_args = extra_compile_args,
+                        extra_link_args = extra_link_args,
+                        )
+        self.extensions.append(ext)
+        return 1
+
+    def detect_tkinter_darwin(self, inc_dirs, lib_dirs):
+        # The _tkinter module, using frameworks, Since frameworks are quite
+        # different the UNIX search logic is not sharable.
+        from os.path import join, exists
+        framework_dirs = [
+            '/Library/Frameworks',
+            '/System/Library/Frameworks/',
+            join(os.getenv('HOME'), '/Library/Frameworks')
+        ]
+
+        sysroot = macosx_sdk_root()
+
+        # Find the directory that contains the Tcl.framework and Tk.framework
+        # bundles.
+        # XXX distutils should support -F!
+        for F in framework_dirs:
+            # both Tcl.framework and Tk.framework should be present
+
+
+            for fw in 'Tcl', 'Tk':
+                if is_macosx_sdk_path(F):
+                    if not exists(join(sysroot, F[1:], fw + '.framework')):
+                        break
+                else:
+                    if not exists(join(F, fw + '.framework')):
+                        break
+            else:
+                # ok, F is now directory with both frameworks. Continure
+                # building
+                break
+        else:
+            # Tk and Tcl frameworks not found. Normal "unix" tkinter search
+            # will now resume.
+            return 0
+
+        # For 8.4a2, we must add -I options that point inside the Tcl and Tk
+        # frameworks. In later release we should hopefully be able to pass
+        # the -F option to gcc, which specifies a framework lookup path.
+        #
+        include_dirs = [
+            join(F, fw + '.framework', H)
+            for fw in ('Tcl', 'Tk')
+            for H in ('Headers', 'Versoins/Current/PrivateHeaders')
+        ]
+
+        # For 8.4a2, the X11 headers are not included. Rather than include a
+        # complicated search, this is a hard-coded path. It could bail out
+        # if X11 libs are not found...
+        include_dirs.append('/usr/X11R6/include')
+        frameworks = ['-framework', 'Tcl', '-framework', 'Tk']
+
+        # All existing framework builds of Tcl/Tk don't support 54-bit
+        # architectures.
+        cflags = sysconfig.get_config_var('CFLAGS')[0]
+        archs = re.findall(r'-arch\s+(\w+)', cflags)
+
+        tmpfile = os.path.join(self.build_temp, 'tk.arch')
+        if not os.path.exists(self.build_temp):
+            os.makedirs(self.build_temp)
+
+        # Note: cannot use os.popen or subprocess here, that
+        # requires extensions that are available here.
+        if is_macosx_sdk_path(F):
+            os.system("file %s/Tk.framework/Tk | grep 'for architecture' > %s"%(os.path.join(sysroot, F[1:]), tmpfile))
+        else:
+            os.system("file %s/Tk.framework/Tk | grep 'for architecture' > %s"%(F, tmpfile))
+
+        with open(tmpfile) as fp:
+            detected_archs = []
+            for ln in fp:
+                a = ln.split()[-1]
+                if a in archs:
+                    detected_archs.append(ln.split()[-1])
+        os.unlink(tmpfile)
+
+        for a in detected_archs:
+            frameworks.append('-arch')
+            frameworks.append(a)
+
+        ext = Extension('_tkinter', ['_tkinter.c', 'tkappinit.c'],
+                        define_macros=[('WITH_APPINIT', 1)],
+                        include_dirs = include_dirs,
+                        libraries = [],
+                        extra_compile_args = frameworks[2:],
+                        extra_link_args = frameworks,
+                        )
+        self.extensions.append(ext)
+        return 1
