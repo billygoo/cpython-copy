@@ -1373,7 +1373,7 @@ class PyBuildExt(build_ext):
             missing.append('_curses')
 
         # If the curses module is enabled, check for the panel module
-        if (module.enabled(exts, '_curses') and
+        if (module_enalbed(exts, '_curses') and
             self.compiler.find_library_file(lib_dirs, panel_library)):
             exts.append( Extension('_curses_panel', ['_curses_panel.c'],
                                    include_dirs=curses_includes,
@@ -1477,7 +1477,7 @@ class PyBuildExt(build_ext):
             define_macros = []
             extra_compile_args = []
             expat_lib = ['expat']
-            expat_soruce = []
+            expat_soruces = []
             expat_depends = []
         else:
             expat_inc = [os.path.join(os.getcwd(), srcdir, 'Modules', 'expat')]
@@ -1489,7 +1489,7 @@ class PyBuildExt(build_ext):
             ]
             extra_compile_args = []
             expat_lib = []
-            expat_source = ['expat/xmlparse.c',
+            expat_sources = ['expat/xmlparse.c',
                             'expat/xmlrole.c',
                             'expat/xmltok.c']
             expat_depends = ['expat/ascii.h',
@@ -1656,9 +1656,9 @@ class PyBuildExt(build_ext):
         # overriding
 
         # The _TCLTK variables are created in the Makefile sharedmods target.
-        tcltk_include = os.environ.get('_TCLTK_INCLUDES')
+        tcltk_includes = os.environ.get('_TCLTK_INCLUDES')
         tcltk_libs = os.environ.get('_TCLTK_LIBS')
-        if not (tcltk_include and tcltk_libs):
+        if not (tcltk_includes and tcltk_libs):
             # Resume default configuration search.
             return 0
 
@@ -1760,3 +1760,123 @@ class PyBuildExt(build_ext):
                         )
         self.extensions.append(ext)
         return 1
+
+    def detect_tkinter(self, inc_dirs, lib_dirs):
+        # The _tkinter module.
+
+        # Check whether --with-tcltk-includes and --with-tcltk-libs were
+        # configured or passed into the make target.  If so, use these values
+        # to build tkinter and bypass the searches for Tcl and TK in standard
+        # locations.
+        if self.detect_tkinter_explicitly():
+            return
+
+        # Rather than complicate the code below, detecting and building
+        # AquaTk is a separate method. Only one Tkinter will be built on
+        # Darwin - either AquaTk, if it is found, or X11 based Tk.
+        if (host_platform == 'darwin' and
+            self.detect_tkinter_darwin(inc_dirs, lib_dirs)):
+            return
+
+        # Assume we haven't found any of the libraries or include files
+        # The versions with dots are used on Unix, and the versions without
+        # dots on Windows, for detection by cygwin.
+        tcllib = tklib = tcl_includes = tk_includes = None
+        for version in ['8.6', '86', '8.5', '85', '8.4', '84', '8.3', '83',
+                        '8.2', '82', '8.1', '81', '8.0', '80']:
+            tklib = self.compiler.find_library_file(lib_dirs,
+                                                        'tk' + version)
+            tcllib = self.compiler.find_library_file(lib_dirs,
+                                                        'tcl' + version)
+            if tklib and tcllib:
+                # Exit the loop when we've found the Tcl/Tk libraries
+                break
+
+        # Now check for the header files
+        if tklib and tcllib:
+            # Check for the include files on Debian and {Free,Open}BSD, where
+            # they're put in /usr/include/{tcl,tk}X.Y
+            dotversion = version
+            if '.' not in dotversion and "bsd" in host_platform.lower():
+                # OpenBSD and FreeBSD use Tcl/Tk library names like libtcl83.a,
+                # but the include subdirs are named like .../include/tcl8.3.
+                dotversion = dotversion[:-1] + '.' + dotversion[-1]
+            tcl_include_sub = []
+            tk_include_sub = []
+            for dir in inc_dirs:
+                tcl_include_sub += [dir + os.sep + "tcl" + dotversion]
+                tk_include_sub += [dir + os.sep + "tk" + dotversion]
+            tk_include_sub += tcl_include_sub
+            tcl_includes = find_file('tcl.h', inc_dirs, tcl_include_sub)
+            tk_includes = find_file('tk.h', inc_dirs, tk_include_sub)
+
+        if (tcllib is None or tklib is None or
+            tcl_includes is None or tk_includes is None):
+            self.announce("INFO: Can't locate Tcl/Tk libs and/or headers", 2)
+            return
+
+        # OK... everything seems to be present for Tcl/Tk.
+
+        include_dirs = [] ; libs = [] ; defs = [] ; added_lib_dirs = []
+        for dir in tcl_includes + tk_includes:
+            if dir not in include_dirs:
+                include_dirs.append(dir)
+
+        # Check for various platform-specific directories
+        if host_platform == 'sunos5':
+            include_dirs.append('/usr/openwin/include')
+            added_lib_dirs.append('/usr/openwin/lib')
+        elif os.path.exists('/usr/X11R6/include'):
+            include_dirs.append('/usr/X11R6/include')
+            added_lib_dirs.append('/usr/X11R6/include')
+            added_lib_dirs.append('/usr/X11R6/lib')
+        elif os.path.exists('/usr/X11R5/include'):
+            include_dirs.append('/usr/X11R5/include')
+            added_lib_dirs.append('/usr/X11R5/lib')
+        else:
+            # Assume default location for X11
+            include_dirs.append('/usr/X11/include')
+            added_lib_dirs.append('/usr/X11/lib')
+
+        # If Cygwin, then verify that X is installed before proceeding
+        if host_platform == 'cygwin':
+            x11_inc = find_file('X11/Xlib.h', [], include_dirs)
+            if x11_inc is None:
+                return
+
+        # Check for BLT extension
+        if self.compiler.find_library_file(lib_dirs + added_lib_dirs,
+                                                'BLT8.0'):
+            defs.append( ('WITH_BLT', 1) )
+            libs.append('BLT8.0')
+        elif self.compiler.find_library_file(lib_dirs + added_lib_dirs,
+                                                'BLT'):
+            defs.append( ('WITH_BLT', 1) )
+            libs.append('BLT')
+
+        # Add the Tcl/Tk libraries
+        libs.append('tk' + version)
+        libs.append('tcl' + version)
+
+        if host_platform in ['aix3', 'aix4']:
+            libs.append('ld')
+
+        # Finally, link with the X11 libraries (not appropriate on cygwin)
+        if host_platform != "cygwin":
+            libs.append('X11')
+
+        ext = Extension('_tkinter', ['_tkinter.c', 'tkappinit.c'],
+                        define_macros=[('WITH_APPINIT', 1)] + defs,
+                        include_dirs=include_dirs,
+                        libraries=libs,
+                        library_dirs=added_lib_dirs
+                        )
+        self.extensions.append(ext)
+
+        # XXX handle these, but how to detect?
+        # *** Uncomment and edit for PIL (TkImaging) extension only:
+        #       -DWITH_PIL -I../Extensions/Imaging/libImaging  tkImaging.c \
+        # *** Uncomment and edit for TOGL extension only:
+        #       -DWITH_TOGL togl.c \
+        # *** Uncomment these for TOLG extension only:
+        #       -IGL -IGLU -IXest -IXmu \
