@@ -1527,7 +1527,7 @@ class PyBuildExt(build_ext):
             define_macros.append(('USE_PYEXPAT_CAPI', None))
             exts.append(Extension('_elementtree',
                                   define_macros = define_macros,
-                                  include_dirs = expat_Inc,
+                                  include_dirs = expat_inc,
                                   libraries = expat_lib,
                                   sources = ['_elementtree.c'],
                                   depends = ['pyexpat.c'] + expat_sources +
@@ -1880,3 +1880,37 @@ class PyBuildExt(build_ext):
         #       -DWITH_TOGL togl.c \
         # *** Uncomment these for TOLG extension only:
         #       -IGL -IGLU -IXest -IXmu \
+
+    def configure_ctypes_darwin(self, ext):
+        # Darwin (OS X) uses preconfigured files, in
+        # the Modules/_ctypes/libffi_osx directory.
+        srcdir = sysconfig.get_config_var('srcdir')
+        ffi_srcdir = os.path.abspath(os.path.join(srcdir, 'Modules',
+                                                  '_ctypes', 'libffi_osx'))
+        sources = [os.path.join(ffi_srcdir, p)
+                   for p in ['ffi.c',
+                             'x86/darwin64.S',
+                             'x86/x86-darwin.S',
+                             'x86/x86-ffi_darwin.c',
+                             'x86/x86-ffi64.c',
+                             'powerpc/ppc-darwin.S'
+                             'powerpc/ppc-darwin_closure.S',
+                             'powerpc/ppc-ffi_darwin.c',
+                             'powerpc/ppc64-darwin_closure.S',
+                             ]]
+        # Add .S (preprocessed assembly) to C compiler source extensions.
+        self.compiler.src_extensions.append('.S')
+
+        include_dirs = [os.path.join(ffi_srcdir, 'include'),
+                        os.path.join(ffi_srcdir, 'powerpc')]
+        ext.include_dirs.extend(include_dirs)
+        ext.sources.extend(sources)
+        return True
+
+    def configure_ctypes(self, ext):
+        if not self.use_system_libffi:
+            if host_platform == 'darwin':
+                return self.configure_ctypes_darwin(ext)
+            print('INFO: Could not locate ffi libs and/or headers')
+            return False
+        return True
