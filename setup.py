@@ -1898,6 +1898,7 @@ class PyBuildExt(build_ext):
                              'powerpc/ppc-ffi_darwin.c',
                              'powerpc/ppc64-darwin_closure.S',
                              ]]
+
         # Add .S (preprocessed assembly) to C compiler source extensions.
         self.compiler.src_extensions.append('.S')
 
@@ -1914,3 +1915,47 @@ class PyBuildExt(build_ext):
             print('INFO: Could not locate ffi libs and/or headers')
             return False
         return True
+
+    def detect_ctypes(self, inc_dirs, lib_dirs):
+        self.use_system_libffi = False
+        include_dirs = []
+        extra_compile_args = []
+        extra_link_args = []
+        sources = ['_ctypes/_ctypes.c',
+                   '_ctypes/callbacks.c',
+                   '_ctypes/callproc.c',
+                   '_ctypes/stgdict.c',
+                   '_ctypes/cfield.c']
+        depends = ['_ctypes/ctypes.h']
+
+        if host_platform == 'darwin':
+            sources.append('_ctypes/malloc_closure.c')
+            sources.append('_ctypes/darwin/dlfcn_simple.c')
+            extra_compile_args.append('-DMACOSX')
+            include_dirs.append('_ctypes/darwin')
+    # XXX Is this still needed?
+    ##        extra_link_args.extend(['-read_only_relocs', 'warning'])
+
+
+        elif host_platform == 'sunos5':
+            # XXX This shouldn't be necessary; it appears that some
+            # of the assembler code is non-PIC (i.e. it has relocations
+            # when it shouldn't. The proper fix would be to rewrite
+            # the assembler code to be PIC.
+            # This only works with GCC; the Sun compiler likely refuses
+            # this option. If you want to compile ctypes with the Sun
+            # compiler, please research a proper solution, instead of
+            # finding some -z option for the Sun compiler.
+            extra_link_args.append('-mimpure-text')
+
+        elif host_platform.startswith('hq-ux'):
+            extra_link_args.append('-fPIC')
+
+            ext = Extension('_ctypes',
+                            include_dirs=include_dirs,
+                            extra_compile_args=extra_compile_args,
+                            extra_link_args=extra_link_args,
+                            libraries=[],
+                            sources=sources,
+                            depends=depends)
+            # function my_sqrt() needs libm for sqrt()
